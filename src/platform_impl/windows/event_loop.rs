@@ -2,8 +2,9 @@
 
 mod runner;
 
-use std::cell::Cell;
-use std::collections::VecDeque;
+use std::cell::{Cell, RefCell};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -15,7 +16,9 @@ use std::{mem, panic, ptr};
 
 use crate::utils::Lazy;
 
-use windows_sys::Win32::Devices::HumanInterfaceDevice::MOUSE_MOVE_RELATIVE;
+use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+    MOUSE_MOVE_ABSOLUTE, MOUSE_VIRTUAL_DESKTOP,
+};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, RedrawWindow, ScreenToClient,
@@ -38,30 +41,32 @@ use windows_sys::Win32::UI::Input::Touch::{
 use windows_sys::Win32::UI::Input::{RAWINPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetMenu, GetMessageW, KillTimer, LoadCursorW, PeekMessageW, PostMessageW, RegisterClassExW,
-    RegisterWindowMessageA, SetCursor, SetTimer, SetWindowPos, TranslateMessage, CREATESTRUCTW,
-    GIDC_ARRIVAL, GIDC_REMOVAL, GWL_STYLE, GWL_USERDATA, HTCAPTION, HTCLIENT, MINMAXINFO,
-    MNC_CLOSE, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PT_PEN, PT_TOUCH, RI_MOUSE_HWHEEL,
-    RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE, SIZE_MAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WINDOWPOS, WMSZ_BOTTOM, WMSZ_BOTTOMLEFT,
-    WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT,
-    WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ENTERSIZEMOVE,
-    WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
-    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN,
-    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MENUCHAR, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
-    WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_POINTERDOWN, WM_POINTERUP,
-    WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
-    WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TOUCH, WM_WINDOWPOSCHANGED,
-    WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP, WS_VISIBLE,
+    GetMenu, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, PeekMessageW, PostMessageW,
+    RegisterClassExW, RegisterWindowMessageA, SetCursor, SetTimer, SetWindowPos, TranslateMessage,
+    CREATESTRUCTW, GIDC_ARRIVAL, GIDC_REMOVAL, GWL_STYLE, GWL_USERDATA, HTCAPTION, HTCLIENT,
+    MINMAXINFO, MNC_CLOSE, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PT_PEN, PT_TOUCH, RI_MOUSE_HWHEEL,
+    RI_MOUSE_WHEEL, SC_MINIMIZE, SC_RESTORE, SIZE_MAXIMIZED, SM_CXSCREEN, SM_CXVIRTUALSCREEN,
+    SM_CYSCREEN, SM_CYVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    WHEEL_DELTA, WINDOWPOS, WMSZ_BOTTOM, WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT,
+    WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY,
+    WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
+    WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_INPUT,
+    WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MENUCHAR, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT,
+    WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TOUCH, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP,
+    WS_VISIBLE,
 };
 
 use crate::application::ApplicationHandler;
 use crate::dpi::{PhysicalPosition, PhysicalSize};
 use crate::error::EventLoopError;
 use crate::event::{
-    DeviceEvent, Event, Force, Ime, InnerSizeWriter, RawKeyEvent, Touch, TouchPhase, WindowEvent,
+    DeviceEvent, DeviceId, Event, Force, Ime, InnerSizeWriter, RawKeyEvent, Touch, TouchPhase,
+    WindowEvent,
 };
 use crate::event_loop::{ActiveEventLoop as RootAEL, ControlFlow, DeviceEvents, EventLoopClosed};
 use crate::keyboard::ModifiersState;
@@ -131,6 +136,7 @@ impl WindowData {
 
 struct ThreadMsgTargetData {
     event_loop_runner: EventLoopRunnerShared<UserEventPlaceholder>,
+    absolute_mouse_position: RefCell<HashMap<DeviceId, [i32; 2]>>,
 }
 
 impl ThreadMsgTargetData {
@@ -910,7 +916,10 @@ fn insert_event_target_window_data(
     thread_msg_target: HWND,
     event_loop_runner: EventLoopRunnerShared<UserEventPlaceholder>,
 ) {
-    let userdata = ThreadMsgTargetData { event_loop_runner };
+    let userdata = ThreadMsgTargetData {
+        event_loop_runner,
+        absolute_mouse_position: RefCell::new(Default::default()),
+    };
     let input_ptr = Box::into_raw(Box::new(userdata));
 
     unsafe { super::set_window_long(thread_msg_target, GWL_USERDATA, input_ptr as isize) };
@@ -2484,30 +2493,54 @@ unsafe fn handle_raw_input(userdata: &ThreadMsgTargetData, data: RAWINPUT) {
     if data.header.dwType == RIM_TYPEMOUSE {
         let mouse = unsafe { data.data.mouse };
 
-        if util::has_flag(mouse.usFlags as u32, MOUSE_MOVE_RELATIVE) {
-            let x = mouse.lLastX as f64;
-            let y = mouse.lLastY as f64;
+        let (x, y) = if !util::has_flag(mouse.usFlags as u32, MOUSE_MOVE_ABSOLUTE) {
+            (mouse.lLastX as f64, mouse.lLastY as f64)
+        } else {
+            match userdata.absolute_mouse_position.borrow_mut().entry(device_id) {
+                Entry::Vacant(new_position) => {
+                    new_position.insert([mouse.lLastX, mouse.lLastY]);
+                    (0.0, 0.0)
+                },
+                Entry::Occupied(mut previous_position) => {
+                    let is_virtual_desktop =
+                        util::has_flag(mouse.usFlags, MOUSE_VIRTUAL_DESKTOP as u16);
+                    let screen_xy = if is_virtual_desktop {
+                        (SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN)
+                    } else {
+                        (SM_CXSCREEN, SM_CYSCREEN)
+                    };
+                    let (width, height) = unsafe {
+                        let width = GetSystemMetrics(screen_xy.0) as f64;
+                        let height = GetSystemMetrics(screen_xy.1) as f64;
+                        (width, height)
+                    };
 
-            if x != 0.0 {
-                userdata.send_event(Event::DeviceEvent {
-                    device_id,
-                    event: Motion { axis: 0, value: x },
-                });
-            }
+                    let raw_dx = mouse.lLastX - previous_position.get()[0];
+                    let raw_dy = mouse.lLastY - previous_position.get()[1];
 
-            if y != 0.0 {
-                userdata.send_event(Event::DeviceEvent {
-                    device_id,
-                    event: Motion { axis: 1, value: y },
-                });
-            }
+                    previous_position.insert([mouse.lLastX, mouse.lLastY]);
 
-            if x != 0.0 || y != 0.0 {
-                userdata.send_event(Event::DeviceEvent {
-                    device_id,
-                    event: MouseMotion { delta: (x, y) },
-                });
+                    let x = raw_dx as f64 * width / 65535.0f64;
+                    let y = raw_dy as f64 * height / 65535.0f64;
+
+                    (x, y)
+                },
             }
+        };
+
+        if x != 0.0 {
+            userdata
+                .send_event(Event::DeviceEvent { device_id, event: Motion { axis: 0, value: x } });
+        }
+
+        if y != 0.0 {
+            userdata
+                .send_event(Event::DeviceEvent { device_id, event: Motion { axis: 1, value: y } });
+        }
+
+        if x != 0.0 || y != 0.0 {
+            userdata
+                .send_event(Event::DeviceEvent { device_id, event: MouseMotion { delta: (x, y) } });
         }
 
         let button_flags = unsafe { mouse.Anonymous.Anonymous.usButtonFlags };
